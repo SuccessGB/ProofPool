@@ -11,6 +11,8 @@
 (define-constant ERR-ALREADY-CLAIMED (err u105))
 (define-constant ERR-INVALID-CAMPAIGN (err u106))
 (define-constant ERR-INVALID-DEADLINE (err u107))
+(define-constant ERR-NO-CONTRIBUTION (err u108))
+(define-constant ERR-CAMPAIGN-ACTIVE (err u109))
 
 ;; Data Maps
 (define-map campaigns
@@ -21,13 +23,14 @@
         deadline: uint,
         total-raised: uint,
         claimed: bool,
-        status: (string-ascii 20)
+        status: (string-ascii 20),
+        description: (optional (string-ascii 500))
     }
 )
 
 (define-map contributions
     { campaign-id: uint, contributor: principal }
-    { amount: uint }
+    { amount: uint, timestamp: uint }
 )
 
 ;; Campaign counter
@@ -56,7 +59,8 @@
                 deadline: deadline,
                 total-raised: u0,
                 claimed: false,
-                status: "active"
+                status: "active",
+                description: none
             }
         )
         (var-set campaign-counter (+ campaign-id u1))
@@ -84,8 +88,12 @@
         
         (map-set contributions
             { campaign-id: campaign-id, contributor: tx-sender }
-            { amount: (default-to u0 (get amount (map-get? contributions 
-                { campaign-id: campaign-id, contributor: tx-sender }))) }
+            { 
+                amount: (+ amount (default-to u0 
+                    (get amount (map-get? contributions 
+                        { campaign-id: campaign-id, contributor: tx-sender })))),
+                timestamp: block-height
+            }
         )
         (ok true)
     )
@@ -138,7 +146,7 @@
     )
 )
 
-;; New function 1: Get campaign status and details
+;; Get campaign status and details
 (define-read-only (get-campaign-status (campaign-id uint))
     (let
         (
@@ -158,7 +166,7 @@
     )
 )
 
-;; New function 2: Update campaign deadline
+;; Update campaign deadline
 (define-public (update-deadline (campaign-id uint) (new-deadline uint))
     (let
         (
@@ -173,6 +181,44 @@
         (map-set campaigns
             { campaign-id: campaign-id }
             (merge campaign { deadline: new-deadline })
+        )
+        (ok true)
+    )
+)
+
+;; New function 3: Get contributor history
+(define-read-only (get-contribution-history (campaign-id uint) (contributor principal))
+    (let
+        (
+            (contribution (unwrap! (map-get? contributions 
+                { campaign-id: campaign-id, contributor: contributor })
+                ERR-NO-CONTRIBUTION))
+        )
+        (ok {
+            amount: (get amount contribution),
+            timestamp: (get timestamp contribution),
+            campaign-id: campaign-id
+        })
+    )
+)
+
+;; New function 4: Cancel campaign (only if no contributions and by owner)
+(define-public (cancel-campaign (campaign-id uint))
+    (let
+        (
+            (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id })
+                     ERR-INVALID-CAMPAIGN))
+        )
+        (asserts! (is-valid-campaign campaign-id) ERR-INVALID-CAMPAIGN)
+        (asserts! (is-eq tx-sender (get owner campaign)) ERR-NOT-AUTHORIZED)
+        (asserts! (is-eq (get total-raised campaign) u0) ERR-CAMPAIGN-ACTIVE)
+        
+        (map-set campaigns
+            { campaign-id: campaign-id }
+            (merge campaign { 
+                status: "cancelled",
+                deadline: block-height
+            })
         )
         (ok true)
     )
